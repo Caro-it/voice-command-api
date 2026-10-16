@@ -14,7 +14,7 @@ REQUEST_TIMEOUT_SECONDS=45
 ALLOWED_ORIGINS=http://localhost:5173,http://127.0.0.1:5173
 ```
 
-> `GROQ_MODEL` debe ser un modelo disponible en tu cuenta de Groq. Si recibes `502 ... model ... does not exist`, consulta los modelos disponibles en la consola de Groq y cambia el valor (por ejemplo `openai/gpt-oss-20b`). La clave solo se lee desde `src/app/core/config.py` (`get_settings()`); nunca se escribe en el código ni se muestra en logs.
+> `openai/gpt-oss-20b` es el valor por defecto (en `.env.example` y en `config.py`); el antiguo `llama-3.1-8b-instant` ya no está disponible en Groq y devolvía `404 model_not_found`. Si recibes `502 ... model ... does not exist`, consulta los modelos disponibles en la consola de Groq y cambia `GROQ_MODEL`. Tras editar `.env` hay que **reiniciar uvicorn**: `--reload` solo vigila el código y la configuración se cachea al arrancar. La clave solo se lee desde `src/app/core/config.py` (`get_settings()`); nunca se escribe en el código ni se muestra en logs.
 
 Copia también `frontend/.env.example` a `frontend/.env` (`VITE_API_BASE_URL=http://127.0.0.1:8000`).
 
@@ -80,6 +80,8 @@ Invoke-RestMethod "$b/instruction" -Method Post -ContentType 'application/json' 
 # Flujo completo en modo JSON (fallback manual del frontend)
 Invoke-RestMethod "$b/transcribe" -Method Post -ContentType 'application/json' -Body '{"transcription":"add buy groceries to my list"}'
 Invoke-RestMethod "$b/transcribe" -Method Post -ContentType 'application/json' -Body '{"transcription":"mark buy groceries as done"}'
+# Nota: Windows PowerShell 5.1 decodifica la respuesta como Latin-1 y muestra "Ã±" en vez de "ñ";
+# el servidor devuelve UTF-8 correcto (compruébalo con curl.exe o desde el navegador).
 
 # Flujo completo con audio
 curl.exe -F "file=@command.webm" -F "language=es" "$b/transcribe"
