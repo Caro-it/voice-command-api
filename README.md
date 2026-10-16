@@ -1,3 +1,92 @@
+## Solución
+
+Implementación del backend del flujo **voz → transcripción → enrutamiento con LLM → acción sobre tareas**, usando FastAPI y Groq (Whisper para STT y un modelo de chat para el enrutamiento).
+
+### 1. Configurar `.env`
+
+Copia `.env.example` a `.env` y rellena tu clave de Groq:
+
+```env
+GROQ_API_KEY=tu_clave_de_groq
+GROQ_MODEL=openai/gpt-oss-20b
+GROQ_TRANSCRIPTION_MODEL=whisper-large-v3-turbo
+REQUEST_TIMEOUT_SECONDS=45
+ALLOWED_ORIGINS=http://localhost:5173,http://127.0.0.1:5173
+```
+
+> `GROQ_MODEL` debe ser un modelo disponible en tu cuenta de Groq. Si recibes `502 ... model ... does not exist`, consulta los modelos disponibles en la consola de Groq y cambia el valor (por ejemplo `openai/gpt-oss-20b`). La clave solo se lee desde `src/app/core/config.py` (`get_settings()`); nunca se escribe en el código ni se muestra en logs.
+
+Copia también `frontend/.env.example` a `frontend/.env` (`VITE_API_BASE_URL=http://127.0.0.1:8000`).
+
+### 2. Arrancar
+
+```bash
+# Backend (http://127.0.0.1:8000, docs en /docs)
+uv sync
+uv run uvicorn src.main:app --reload
+
+# Frontend (http://localhost:5173)
+cd frontend
+npm install
+npm run dev
+```
+
+### 3. Endpoints
+
+| Método | Ruta | Body | Éxito | Errores |
+|---|---|---|---|---|
+| `GET` | `/` | — | `200` `{"status":"ok"}` | — |
+| `GET` | `/tasks` | — | `200` lista de tareas | — |
+| `POST` | `/tasks` | `{"title", "done"?}` | `201` tarea creada | `422` datos inválidos |
+| `PUT` | `/tasks/{id}` | `{"title", "done"}` | `200` tarea | `404` no existe, `422` |
+| `PATCH` | `/tasks/{id}` | `{"title"?, "done"?}` | `200` tarea | `404` no existe, `422` |
+| `DELETE` | `/tasks/{id}` | — | `200` `{"message": "Task <id> deleted"}` | `404` no existe |
+| `POST` | `/instruction` | `{"transcription"}` | `200` `{"endpoint","method","params"}` (**no ejecuta nada**) | `422`, `502` fallo/respuesta inválida del LLM |
+| `POST` | `/transcribe` | `multipart/form-data` (`file`, `language`?) **o** JSON `{"transcription"}` | `200` `{"transcription","instruction","result"}` | `400` sin audio / idioma inválido, `404` tarea no existe, `415` content-type no soportado, `422` transcripción vacía o params incompletos, `502` fallo de Groq |
+
+### 4. Arquitectura
+
+```text
+src/app/services/
+|-- task_store.py          # lista `tasks` en memoria + contador de ids (nunca reutiliza ids)
+|-- groq_client.py         # cliente groq.Groq con api_key y timeout desde settings
+|-- transcription.py       # audio -> texto (Whisper)
+|-- instruction_router.py  # texto -> {"endpoint","method","params"} (LLM + validación)
+`-- executor.py            # ejecuta la instrucción ya decidida contra task_store
+```
+
+`POST /transcribe` = `transcribe_audio` (o el texto del JSON) → `route_instruction` (la misma lógica que `POST /instruction`) → `execute_instruction`. Las llamadas síncronas a Groq se ejecutan con `run_in_threadpool` para no bloquear el event loop.
+
+### 5. Decisiones de diseño
+
+- **Se pasa la lista de tareas al LLM.** El mensaje de usuario incluye la transcripción y las tareas actuales (`id`, `title`, `done`) en JSON. Así el modelo puede resolver referencias por título: *"marca comprar leche como hecha"* → `PATCH /tasks/1 {"done": true}`. Sin esa lista, el modelo tendría que inventarse el id.
+- **La salida del LLM se valida antes de usarla.** Se pide `response_format={"type": "json_object"}` con `temperature=0`, y además se comprueba que: el JSON es parseable, encaja con `InstructionPayload`, el método (normalizado a mayúsculas) es uno de `GET/POST/PUT/PATCH/DELETE`, el endpoint cumple `^/tasks(/\d+)?$` y la combinación es coherente (`GET`/`POST` sobre `/tasks`; `PUT`/`PATCH`/`DELETE` sobre `/tasks/{id}`). Si algo falla se responde `502` con un mensaje claro en lugar de ejecutar algo incorrecto. Después, `executor.py` valida los `params` con `TaskCreate`/`TaskReplace`/`TaskUpdate` (`422` si faltan datos).
+- **No hay reglas manuales.** Ninguna decisión depende de buscar palabras como `"añade"` o `"add"`: eso falla con sinónimos, otros idiomas o errores de transcripción. Toda la intención la decide el LLM con un *system prompt* bilingüe que describe las 5 operaciones y trae ejemplos *few-shot* en español e inglés. El executor solo despacha el método y el endpoint que eligió el modelo. Si el comando es ambiguo o no trata de tareas, el prompt pide devolver un `GET /tasks`, que es inofensivo.
+- **Almacenamiento solo en memoria.** Una lista a nivel de módulo protegida con un `Lock` y un contador `itertools.count` (un id borrado nunca se reutiliza). Los datos se pierden al reiniciar el servidor.
+
+### 6. Ejemplos de prueba (PowerShell)
+
+```powershell
+$b = 'http://127.0.0.1:8000'
+Invoke-RestMethod "$b/tasks" -Method Post -ContentType 'application/json' -Body '{"title":"Comprar leche"}'
+Invoke-RestMethod "$b/tasks"
+Invoke-RestMethod "$b/tasks/1" -Method Patch -ContentType 'application/json' -Body '{"done":true}'
+Invoke-RestMethod "$b/tasks/1" -Method Put -ContentType 'application/json' -Body '{"title":"Comprar pan","done":false}'
+Invoke-RestMethod "$b/tasks/1" -Method Delete
+
+# Solo enrutamiento (no modifica las tareas)
+Invoke-RestMethod "$b/instruction" -Method Post -ContentType 'application/json' -Body '{"transcription":"add buy groceries to my list"}'
+
+# Flujo completo en modo JSON (fallback manual del frontend)
+Invoke-RestMethod "$b/transcribe" -Method Post -ContentType 'application/json' -Body '{"transcription":"add buy groceries to my list"}'
+Invoke-RestMethod "$b/transcribe" -Method Post -ContentType 'application/json' -Body '{"transcription":"mark buy groceries as done"}'
+
+# Flujo completo con audio
+curl.exe -F "file=@command.webm" -F "language=es" "$b/transcribe"
+```
+
+---
+
 # Voice Command API at 4Geeks Academy
 
 <!-- hide -->
