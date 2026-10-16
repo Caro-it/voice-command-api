@@ -1,5 +1,7 @@
 ## Solución
 
+🎥 **Demo en vídeo:** [docs/demo.mp4](docs/demo.mp4) — grabación de voz, transcripción y ejecución de la acción.
+
 Implementación del backend del flujo **voz → transcripción → enrutamiento con LLM → acción sobre tareas**, usando FastAPI y Groq (Whisper para STT y un modelo de chat para el enrutamiento).
 
 ### 1. Configurar `.env`
@@ -33,16 +35,16 @@ npm run dev
 
 ### 3. Endpoints
 
-| Método | Ruta | Body | Éxito | Errores |
-|---|---|---|---|---|
-| `GET` | `/` | — | `200` `{"status":"ok"}` | — |
-| `GET` | `/tasks` | — | `200` lista de tareas | — |
-| `POST` | `/tasks` | `{"title", "done"?}` | `201` tarea creada | `422` datos inválidos |
-| `PUT` | `/tasks/{id}` | `{"title", "done"}` | `200` tarea | `404` no existe, `422` |
-| `PATCH` | `/tasks/{id}` | `{"title"?, "done"?}` | `200` tarea | `404` no existe, `422` |
-| `DELETE` | `/tasks/{id}` | — | `200` `{"message": "Task <id> deleted"}` | `404` no existe |
-| `POST` | `/instruction` | `{"transcription"}` | `200` `{"endpoint","method","params"}` (**no ejecuta nada**) | `422`, `502` fallo/respuesta inválida del LLM |
-| `POST` | `/transcribe` | `multipart/form-data` (`file`, `language`?) **o** JSON `{"transcription"}` | `200` `{"transcription","instruction","result"}` | `400` sin audio / idioma inválido, `404` tarea no existe, `415` content-type no soportado, `422` transcripción vacía o params incompletos, `502` fallo de Groq |
+| Método   | Ruta           | Body                                                                       | Éxito                                                        | Errores                                                                                                                                                        |
+| -------- | -------------- | -------------------------------------------------------------------------- | ------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `GET`    | `/`            | —                                                                          | `200` `{"status":"ok"}`                                      | —                                                                                                                                                              |
+| `GET`    | `/tasks`       | —                                                                          | `200` lista de tareas                                        | —                                                                                                                                                              |
+| `POST`   | `/tasks`       | `{"title", "done"?}`                                                       | `201` tarea creada                                           | `422` datos inválidos                                                                                                                                          |
+| `PUT`    | `/tasks/{id}`  | `{"title", "done"}`                                                        | `200` tarea                                                  | `404` no existe, `422`                                                                                                                                         |
+| `PATCH`  | `/tasks/{id}`  | `{"title"?, "done"?}`                                                      | `200` tarea                                                  | `404` no existe, `422`                                                                                                                                         |
+| `DELETE` | `/tasks/{id}`  | —                                                                          | `200` `{"message": "Task <id> deleted"}`                     | `404` no existe                                                                                                                                                |
+| `POST`   | `/instruction` | `{"transcription"}`                                                        | `200` `{"endpoint","method","params"}` (**no ejecuta nada**) | `422`, `502` fallo/respuesta inválida del LLM                                                                                                                  |
+| `POST`   | `/transcribe`  | `multipart/form-data` (`file`, `language`?) **o** JSON `{"transcription"}` | `200` `{"transcription","instruction","result"}`             | `400` sin audio / idioma inválido, `404` tarea no existe, `415` content-type no soportado, `422` transcripción vacía o params incompletos, `502` fallo de Groq |
 
 ### 4. Arquitectura
 
@@ -59,9 +61,9 @@ src/app/services/
 
 ### 5. Decisiones de diseño
 
-- **Se pasa la lista de tareas al LLM.** El mensaje de usuario incluye la transcripción y las tareas actuales (`id`, `title`, `done`) en JSON. Así el modelo puede resolver referencias por título: *"marca comprar leche como hecha"* → `PATCH /tasks/1 {"done": true}`. Sin esa lista, el modelo tendría que inventarse el id.
+- **Se pasa la lista de tareas al LLM.** El mensaje de usuario incluye la transcripción y las tareas actuales (`id`, `title`, `done`) en JSON. Así el modelo puede resolver referencias por título: _"marca comprar leche como hecha"_ → `PATCH /tasks/1 {"done": true}`. Sin esa lista, el modelo tendría que inventarse el id.
 - **La salida del LLM se valida antes de usarla.** Se pide `response_format={"type": "json_object"}` con `temperature=0`, y además se comprueba que: el JSON es parseable, encaja con `InstructionPayload`, el método (normalizado a mayúsculas) es uno de `GET/POST/PUT/PATCH/DELETE`, el endpoint cumple `^/tasks(/\d+)?$` y la combinación es coherente (`GET`/`POST` sobre `/tasks`; `PUT`/`PATCH`/`DELETE` sobre `/tasks/{id}`). Si algo falla se responde `502` con un mensaje claro en lugar de ejecutar algo incorrecto. Después, `executor.py` valida los `params` con `TaskCreate`/`TaskReplace`/`TaskUpdate` (`422` si faltan datos).
-- **No hay reglas manuales.** Ninguna decisión depende de buscar palabras como `"añade"` o `"add"`: eso falla con sinónimos, otros idiomas o errores de transcripción. Toda la intención la decide el LLM con un *system prompt* bilingüe que describe las 5 operaciones y trae ejemplos *few-shot* en español e inglés. El executor solo despacha el método y el endpoint que eligió el modelo. Si el comando es ambiguo o no trata de tareas, el prompt pide devolver un `GET /tasks`, que es inofensivo.
+- **No hay reglas manuales.** Ninguna decisión depende de buscar palabras como `"añade"` o `"add"`: eso falla con sinónimos, otros idiomas o errores de transcripción. Toda la intención la decide el LLM con un _system prompt_ bilingüe que describe las 5 operaciones y trae ejemplos _few-shot_ en español e inglés. El executor solo despacha el método y el endpoint que eligió el modelo. Si el comando es ambiguo o no trata de tareas, el prompt pide devolver un `GET /tasks`, que es inofensivo.
 - **Almacenamiento solo en memoria.** Una lista a nivel de módulo protegida con un `Lock` y un contador `itertools.count` (un id borrado nunca se reutiliza). Los datos se pierden al reiniciar el servidor.
 
 ### 6. Ejemplos de prueba (PowerShell)
